@@ -22,7 +22,7 @@ pi install npm:pi-prune
 Or from git:
 
 ```bash
-pi install git:github.com/<owner>/pi-prune
+pi install git:github.com/well-mannered-rascal/pi-prune
 ```
 
 Or from a local checkout:

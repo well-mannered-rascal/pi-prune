@@ -10,6 +10,14 @@
 		"compaction"
 	],
 	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/well-mannered-rascal/pi-prune.git"
+	},
+	"homepage": "https://github.com/well-mannered-rascal/pi-prune#readme",
+	"bugs": {
+		"url": "https://github.com/well-mannered-rascal/pi-prune/issues"
+	},
 	"type": "module",
 	"pi": {
 		"extensions": [
@@ -25,6 +33,7 @@
 		"LICENSE"
 	],
 	"scripts": {
-		"test": "node test/engine-edges.mjs && node test/prune-fixture-e2e.mjs && node test/config-e2e.mjs && node test/extension-e2e.mjs"
+		"test": "node test/engine-edges.mjs && node test/prune-fixture-e2e.mjs && node test/config-e2e.mjs && node test/extension-e2e.mjs",
+		"prepublishOnly": "npm test"
 	}
 }
