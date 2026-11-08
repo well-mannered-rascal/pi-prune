@@ -1,7 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead } from "@earendil-works/pi-coding-agent";
 import type { ContextEditEntryDraft, ExtensionAPI, ExtensionCommandContext, ExtensionContext, SessionBoundaryDraft } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 
 const DEFAULT_PROTECT_TURNS = 2;
 const STALE_MIN_TOKENS = 300;
@@ -13,7 +15,7 @@ const STALE_TOOLS: ReadonlySet<string> = new Set([
 ]);
 const STUB_MARKER = "elided by /prune";
 const IMAGE_TOKENS = 1200;
-const STUB_OVERHEAD_TOKENS = 30;
+const STUB_OVERHEAD_TOKENS = 40;
 const ARGS_OVERHEAD_TOKENS = Math.round(STUB_OVERHEAD_TOKENS / 2);
 const DEFAULT_RESERVE_TOKENS = 16384;
 const DEFAULT_ALERT_PERCENT = 60;
@@ -830,14 +832,14 @@ export interface PrunePlan {
 export type RawContentGetter = (targetId: string) => unknown;
 export type ProjectedContentGetter = (targetId: string) => unknown;
 
-function clearedArgsContent(raw: unknown[], callIds: Set<string>): { content: unknown[]; cleared: number } {
+function clearedArgsContent(raw: unknown[], callIds: Set<string>, entryId: string): { content: unknown[]; cleared: number } {
 	let cleared = 0;
 	const content = raw.map((block) => {
 		if (!isToolCall(block) || !callIds.has(block.id ?? "")) return block;
 		const tokens = callBlockTokens(block);
 		if (tokens < ARGS_MIN_TOKENS) return block;
 		cleared++;
-		return { ...block, arguments: { pi_prune_elided: `args pruned by /prune (was ~${tokens} tok)` } };
+		return { ...block, arguments: { pi_prune_elided: `args pruned by /prune (was ~${tokens} tok) · id ${entryId}` } };
 	});
 	return { content, cleared };
 }
@@ -847,9 +849,9 @@ function stubText(info: MsgInfo): string {
 	const digest = info.digest.replace(/\s+/g, " ");
 	const short = digest.length > 120 ? `${digest.slice(0, 120)}...` : digest;
 	if (info.toolName === "bash") {
-		return `[bash '${short}' ${STUB_MARKER} (turn ${info.turn}, ~${tokens} tok). Re-run the command if you need its output.]`;
+		return `[bash '${short}' ${STUB_MARKER} · id ${info.entryId} (turn ${info.turn}, ~${tokens} tok). Use prune_recall with this id for the original output.]`;
 	}
-	return `[${info.toolName ?? "tool"} ${short} ${STUB_MARKER} (turn ${info.turn}, ~${tokens} tok). Re-run the tool if you need its output.]`;
+	return `[${info.toolName ?? "tool"} ${short} ${STUB_MARKER} · id ${info.entryId} (turn ${info.turn}, ~${tokens} tok). Use prune_recall with this id for the original output.]`;
 }
 
 export function buildPrunePlan(analysis: Analysis, getRawContent: RawContentGetter, getProjectedContent: ProjectedContentGetter): PrunePlan {
@@ -911,7 +913,7 @@ export function buildPrunePlan(analysis: Analysis, getRawContent: RawContentGett
 			if (existing?.replacement === null) continue;
 			const source = existing ? existing.replacement.content as unknown[] : baseContent(args.entryId);
 			if (source.length === 0) continue;
-			const { content, cleared } = clearedArgsContent(source, new Set(args.callIds));
+			const { content, cleared } = clearedArgsContent(source, new Set(args.callIds), args.entryId);
 			if (cleared === 0) continue;
 			argsOverhead += cleared * ARGS_OVERHEAD_TOKENS;
 			if (existing) {
@@ -1104,6 +1106,46 @@ export function collectPruneStats(branch: { id: string; type: string; customType
 		else stats.auto++;
 	}
 	return stats;
+}
+
+export interface PruneOriginal {
+	kind: string;
+	tokens: number;
+	original: unknown;
+}
+
+export function collectPruneOriginals(branch: { id: string; type: string; customType?: string; data?: unknown }[]): Map<string, PruneOriginal> {
+	const undone = undoneRecordIds(branch);
+	const originals = new Map<string, PruneOriginal>();
+	for (const entry of branch) {
+		if (entry.type !== "custom" || entry.customType !== PRUNE_RECORD || undone.has(entry.id)) continue;
+		const data = entry.data as Partial<PruneRecordData> | undefined;
+		if (!Array.isArray(data?.edits)) continue;
+		for (const edit of data.edits) {
+			if (!edit || typeof edit.targetId !== "string") continue;
+			originals.set(edit.targetId, {
+				kind: typeof edit.kind === "string" ? edit.kind : "edit",
+				tokens: typeof edit.tokens === "number" ? edit.tokens : 0,
+				original: edit.original,
+			});
+		}
+	}
+	return originals;
+}
+
+function renderOriginal(original: unknown): string {
+	if (typeof original === "string") return original;
+	if (Array.isArray(original)) {
+		const parts: string[] = [];
+		for (const raw of original) {
+			const block = raw as { type?: string; text?: string; thinking?: string; name?: string; arguments?: unknown };
+			if (block?.type === "text" && typeof block.text === "string") parts.push(block.text);
+			else if (block?.type === "thinking" && typeof block.thinking === "string") parts.push(`[thinking]\n${block.thinking}`);
+			else if (block?.type === "toolCall") parts.push(`[toolCall ${block.name ?? "?"}] ${JSON.stringify(block.arguments ?? {})}`);
+		}
+		return parts.length > 0 ? parts.join("\n\n") : JSON.stringify(original, null, 2);
+	}
+	return original !== null && typeof original === "object" ? JSON.stringify(original, null, 2) : String(original ?? "");
 }
 
 export function withPendingBatch(stats: PruneStats, netTokens: number, trigger: PruneTrigger): PruneStats {
@@ -1323,6 +1365,40 @@ export default function (pi: ExtensionAPI) {
 		lastAutoPruneAt = Date.now();
 		emit(ctx, autoPruneMessage(decision.auto, analysis, plan, window, plan.edits.length, stats, []));
 		return { entries: planToDrafts(plan, decision.auto) };
+	});
+
+	pi.registerTool({
+		name: "prune_recall",
+		label: "Recall Pruned Content",
+		description: "Retrieve the original content of an entry pruned by /prune. Use the id shown in a prune stub or cleared-args marker. Tool output is the original from that turn and may be stale.",
+		promptSnippet: "Retrieve original content for a pruned entry",
+		promptGuidelines: [
+			"When a prune stub or cleared-args marker shows an id and you need the original content, call prune_recall with that id instead of re-running the tool.",
+		],
+		parameters: Type.Object({
+			ids: Type.Array(Type.String({ description: "Pruned entry id, such as 93a0d702" }), { description: "Entry ids to retrieve" }),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const branch = (ctx.sessionManager as unknown as { getBranch(): { id: string; type: string; customType?: string; data?: unknown }[] }).getBranch();
+			const originals = collectPruneOriginals(branch);
+			const blocks: string[] = [];
+			for (const id of params.ids) {
+				const hit = originals.get(id);
+				if (!hit) {
+					blocks.push(`## id: ${id}\n(not a pruned entry on this branch)`);
+					continue;
+				}
+				const truncated = truncateHead(renderOriginal(hit.original), { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
+				let body = truncated.content;
+				if (truncated.truncated) body += `\n[Output truncated: ${truncated.outputLines}/${truncated.totalLines} lines shown]`;
+				const snapshot = hit.kind === "tool-stub" ? "\n(original tool output from that turn, the source may have changed since)\n" : "";
+				blocks.push(`## id: ${id} · ${hit.kind} · ~${fmt(hit.tokens)} tok${snapshot}\n${body}`);
+			}
+			return {
+				content: [{ type: "text" as const, text: blocks.join("\n\n---\n\n") }],
+				details: { ids: params.ids },
+			};
+		},
 	});
 
 	pi.registerCommand("ctx", {

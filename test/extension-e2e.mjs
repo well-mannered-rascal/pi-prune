@@ -28,16 +28,19 @@ const sm = SessionManager.open(sessionFile);
 
 const handlers = {};
 const commands = {};
+const tools = {};
 const notices = [];
 const pi = {
 	on: (name, fn) => { handlers[name] = fn; },
 	registerCommand: (name, options) => { commands[name] = options; },
+	registerTool: (tool) => { tools[tool.name] = tool; },
 	getSettings: () => ({ compaction: { reserveTokens: 16384 } }),
 };
 factory(pi);
 
 check("handlers registered", ["session_start", "session_compact", "turn_end", "agent_settled", "agent_start", "session_before_switch", "session_before_fork", "session_shutdown"].every((n) => typeof handlers[n] === "function"));
 check("commands registered", ["ctx", "prune", "unprune", "prune-config"].every((n) => typeof commands[n]?.handler === "function"));
+check("prune_recall tool registered", typeof tools.prune_recall?.execute === "function");
 
 const ctx = {
 	mode: "tui",
@@ -63,6 +66,33 @@ for (const draft of result.entries) {
 }
 const stats = collectPruneStats(sm.getBranch());
 check("boundary batch persisted", stats.batches === 1 && stats.auto === 1 && stats.netTokens > 0);
+
+const recallRecord = sm.getBranch().find((e) => e.type === "custom" && e.customType === "pi-prune-record");
+const stubEdit = recallRecord?.data?.edits?.find((e) => e.kind === "tool-stub");
+const argsEdit = recallRecord?.data?.edits?.find((e) => e.kind === "args-clear");
+if (!stubEdit) throw new Error("fixture produced no tool-stub edit for recall");
+const recallCtx = { ...ctx, sessionManager: sm };
+const recalled = await tools.prune_recall.execute("call1", { ids: [stubEdit.targetId, "missing"] }, null, null, recallCtx);
+check("recall returns original stub content", recalled.content[0].text.includes(stubEdit.original[0].text.slice(0, 40)));
+check("recall marks tool output as a snapshot", recalled.content[0].text.includes("original tool output from that turn, the source may have changed since"));
+check("recall refuses unknown ids", recalled.content[0].text.includes("not a pruned entry"));
+if (argsEdit) {
+	const argsRecalled = await tools.prune_recall.execute("call2", { ids: [argsEdit.targetId] }, null, null, recallCtx);
+	check("recall returns cleared args", argsRecalled.content[0].text.includes("toolCall"));
+}
+const hugeBranch = [{ id: "rec-huge", type: "custom", customType: "pi-prune-record", data: { netTokens: 1, edits: [{ targetId: "huge", kind: "tool-stub", tokens: 20000, original: [{ type: "text", text: "x".repeat(60000) }] }] } }];
+const hugeCtx = { ...ctx, sessionManager: { getBranch: () => hugeBranch, buildSessionProjection: () => ({ entries: [] }) } };
+const hugeRecalled = await tools.prune_recall.execute("call3", { ids: ["huge"] }, null, null, hugeCtx);
+check("recall truncates large originals", hugeRecalled.content[0].text.includes("Output truncated"));
+const undoneCtx = {
+	...ctx,
+	sessionManager: {
+		getBranch: () => [...hugeBranch, { id: "undo", type: "custom", customType: "pi-prune-unprune-marker", data: { recordId: "rec-huge" } }],
+		buildSessionProjection: () => ({ entries: [] }),
+	},
+};
+const undoneRecalled = await tools.prune_recall.execute("call4", { ids: ["huge"] }, null, null, undoneCtx);
+check("recall refuses undone batches", undoneRecalled.content[0].text.includes("not a pruned entry"));
 
 const before = sm.buildSessionProjection().entries.length;
 const branchBeforeLow = sm.getBranch().length;

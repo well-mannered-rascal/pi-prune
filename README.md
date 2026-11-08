@@ -55,6 +55,12 @@ Hard invariants:
 - Replacements are built from projected content, so earlier prune batches cannot be resurrected.
 - Raw originals are stored in a `pi-prune-record` custom entry for `/unprune`.
 
+## Recall
+
+Prune stubs and cleared-args markers include the pruned entry id. The `prune_recall` tool returns the original content for ids from the current branch's prune records. It refuses ids that were not pruned or whose batch was undone, and truncates large output to pi's standard limits. Recall is on demand, so the original text returns to context only for the turn that asks for it.
+
+Tool output is the original from that turn, not current state. A recalled file read may be stale, so re-read the file when current content matters. The tool marks tool-stub results with this warning.
+
 ## Config
 
 Config is global only. It is stored at `~/.pi/agent/pi-prune.json`, or `$PI_CODING_AGENT_DIR/pi-prune.json` when that variable is set. It is not project-local.
@@ -149,13 +155,14 @@ Token math mirrors pi's own `estimateTokens` (chars/4) and anchors totals on the
 ## Tests
 
 ```bash
+npm install
 npm test
 ```
 
-- `test/engine-edges.mjs`: in-memory token boundaries, anchoring, already-pruned content, referent-pruned thinking, missing originals, and partial apply/unprune failures, 34 checks
+- `test/engine-edges.mjs`: in-memory token boundaries, anchoring, already-pruned content, referent-pruned thinking, missing originals, recall lookup, and partial apply/unprune failures, 38 checks
 - `test/prune-fixture-e2e.mjs`: deterministic synthetic session, 38 checks
 - `test/config-e2e.mjs`: config parsing and loading, trigger decisions, stats, plan row accounting, config editing, and protect-window accounting, 55 checks
-- `test/extension-e2e.mjs`: extension wiring, boundary drafts, auto-prune, alert suppression, idle timer, command and wizard unhappy paths, 28 checks
+- `test/extension-e2e.mjs`: extension wiring, boundary drafts, auto-prune, alert suppression, idle timer, recall tool, command and wizard unhappy paths, 35 checks
 - `test/prune-e2e.mjs`: optional live-session regression, set `PI_SESSION_FILE`
 - `test/smoke.mjs`: optional real-session report, set `PI_SESSION_FILE`
 

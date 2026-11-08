@@ -7,7 +7,7 @@
  */
 import {
 	buildAnalysis, buildPrunePlan, planToDrafts, buildPruneRecord,
-	applyPrunePlan, applyUnprune, collectPruneStats, withPendingBatch, formatReport,
+	applyPrunePlan, applyUnprune, collectPruneStats, collectPruneOriginals, withPendingBatch, formatReport,
 } from "../extensions/pi-prune.ts";
 
 let pass = 0, fail = 0;
@@ -156,6 +156,24 @@ check("args over the per-call floor clear", (() => {
 	const plan = argsPlan([call("c1", "bash", { command: "x".repeat(200) })]);
 	return plan.edits.length === 1 && plan.edits[0].kind === "args-clear";
 })());
+const pointerProjection = staleProj(1200);
+const pointerPlan = buildPrunePlan(
+	buildAnalysis(pointerProjection, { protectTurns: 0 }),
+	(id) => contentOf(pointerProjection, id),
+	(id) => contentOf(pointerProjection, id),
+);
+const pointerStub = pointerPlan.edits.find((e) => e.kind === "tool-stub");
+check(
+	"stub text carries its recall id",
+	typeof pointerStub?.replacement?.content === "string" && pointerStub.replacement.content.includes(pointerStub.targetId),
+);
+const pointerArgs = buildPrunePlan(
+	analysisOf({ args: [{ entryId: "a1", callIds: ["c1"], tokens: 50 }] }),
+	() => [call("c1", "bash", { command: "x".repeat(200) })],
+	() => [call("c1", "bash", { command: "x".repeat(200) })],
+);
+const pointerArgBlock = pointerArgs.edits[0]?.replacement?.content?.find?.((b) => b.type === "toolCall");
+check("cleared args carry their recall id", String(pointerArgBlock?.arguments?.pi_prune_elided ?? "").includes("a1"));
 
 // --- apply and unprune failure paths ---
 const twoEditPlan = {
@@ -205,6 +223,17 @@ const stats = collectPruneStats([
 check("malformed records are skipped and undone batches excluded", stats.batches === 1 && stats.netTokens === 100 && stats.manual === 1 && stats.auto === 0, JSON.stringify(stats));
 const pendingManual = withPendingBatch({ batches: 1, manual: 1, auto: 0, netTokens: 100 }, 25, "manual");
 check("pending manual batch increments manual", pendingManual.manual === 2 && pendingManual.auto === 0 && pendingManual.netTokens === 125);
+
+const originals = collectPruneOriginals([
+	{ id: "r1", type: "custom", customType: "pi-prune-record", data: { netTokens: 100, edits: [{ targetId: "a1", kind: "tool-stub", tokens: 100, original: [{ type: "text", text: "first" }] }] } },
+	{ id: "r2", type: "custom", customType: "pi-prune-record", data: { netTokens: 50, edits: [{ targetId: "a2", kind: "args-clear", tokens: 50, original: [] }] } },
+	{ id: "u1", type: "custom", customType: "pi-prune-unprune-marker", data: { recordId: "r2" } },
+]);
+check("recall map keeps live records and drops undone ones", originals.has("a1") && !originals.has("a2"), [...originals.keys()].join(","));
+check(
+	"recall map skips malformed edits",
+	collectPruneOriginals([{ id: "r3", type: "custom", customType: "pi-prune-record", data: { netTokens: 1, edits: [null, { kind: "tool-stub" }] } }]).size === 0,
+);
 
 const draftPlan = {
 	edits: [{ targetId: "a1", kind: "args-clear", tokens: 50, original: { content: [] }, replacement: { content: "stub" } }],

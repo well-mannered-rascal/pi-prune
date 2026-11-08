@@ -163,7 +163,7 @@ for (const e of plan.edits) {
 	}
 }
 const stubs = plan.edits.filter((e) => e.kind === "tool-stub").length;
-const expectedNet = plan.grossTokens - stubs * 30 - clearedCalls * 15;
+const expectedNet = plan.grossTokens - stubs * 40 - clearedCalls * 20;
 check("net accounts per cleared call", Math.abs(plan.netTokens - expectedNet) <= 1, `net=${plan.netTokens} expected=${expectedNet} calls=${clearedCalls} stubs=${stubs}`);
 check("plan carries staleMinAge", plan.staleMinAge === 1);
 
