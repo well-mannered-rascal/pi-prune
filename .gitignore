@@ -1,0 +1,6 @@
+node_modules/
+scratch/
+proposals/
+*.log
+*.tgz
+.DS_Store

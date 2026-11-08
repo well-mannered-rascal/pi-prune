@@ -1,0 +1,30 @@
+{
+	"name": "pi-prune",
+	"version": "1.0.0",
+	"description": "Surgical context pruning for the pi coding agent: /ctx analysis, /prune, /unprune, optional auto-prune",
+	"keywords": [
+		"pi-package",
+		"pi",
+		"context",
+		"pruning",
+		"compaction"
+	],
+	"license": "MIT",
+	"type": "module",
+	"pi": {
+		"extensions": [
+			"./extensions/pi-prune.ts"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*"
+	},
+	"files": [
+		"extensions",
+		"README.md",
+		"LICENSE"
+	],
+	"scripts": {
+		"test": "node test/engine-edges.mjs && node test/prune-fixture-e2e.mjs && node test/config-e2e.mjs && node test/extension-e2e.mjs"
+	}
+}
